@@ -1,4 +1,4 @@
-from ccbackup_bot.cli import main
+from ccbackup_bot.gui.main_window import main
 
 
 if __name__ == "__main__":
