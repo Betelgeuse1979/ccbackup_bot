@@ -86,3 +86,5 @@ provided by environment variables and are not bundled into the packaged app.
 
 Read-only serial console identification is documented in
 [docs/SERIAL_CONSOLE.md](../docs/SERIAL_CONSOLE.md).
+That guide also covers the read-only restore readiness check and pre-restore
+safety backup bundle.

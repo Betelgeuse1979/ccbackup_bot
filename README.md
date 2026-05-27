@@ -72,6 +72,8 @@ without PostgreSQL configured.
 
 Read-only serial console identification is documented in
 [docs/SERIAL_CONSOLE.md](docs/SERIAL_CONSOLE.md).
+The same guide covers the read-only restore readiness check and pre-restore
+safety backup bundle.
 
 ## GUI
 
@@ -98,6 +100,9 @@ skipped.
 The GUI includes a small **Serial Console - READ-ONLY Identification** section
 for identifying a switch over a console cable. It does not restore
 configuration or send write commands.
+It can also run a **Restore Readiness Check** that inspects existing
+configuration and saves a pre-restore safety backup bundle when existing
+configuration is detected. No restore actions are performed.
 
 On Windows, GUI settings are stored at:
 

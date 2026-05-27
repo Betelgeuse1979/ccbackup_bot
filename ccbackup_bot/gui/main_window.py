@@ -23,7 +23,7 @@ from ccbackup_bot.backup_runner import create_backup_folder, run_backup_job
 from ccbackup_bot.db import store_successful_backups_and_write_report
 from ccbackup_bot.devices import load_credentials, load_devices_from_excel
 from ccbackup_bot.gui.settings import clear_settings, load_settings, save_settings, settings_path
-from ccbackup_bot.serial_console import identify_switch_over_serial, list_serial_ports
+from ccbackup_bot.serial_console import check_restore_readiness_over_serial, identify_switch_over_serial, list_serial_ports
 
 
 class BackupWorker(QThread):
@@ -74,17 +74,19 @@ class SerialIdentifyWorker(QThread):
     log_message = Signal(str)
     finished_with_status = Signal(bool)
 
-    def __init__(self, port: str, baudrate: int, output_path: str) -> None:
+    def __init__(self, port: str, baudrate: int, output_path: str, credentials_path: str) -> None:
         super().__init__()
         self.port = port
         self.baudrate = baudrate
         self.output_path = output_path
+        self.credentials_path = credentials_path
 
     def run(self) -> None:
         result = identify_switch_over_serial(
             self.port,
             baudrate=self.baudrate,
             log_folder=Path(self.output_path or "backups") / "logs",
+            **self.load_serial_credentials(),
         )
         self.log_message.emit("Read-only serial identification result")
         self.log_message.emit(f"  Status: {result.status}")
@@ -99,12 +101,77 @@ class SerialIdentifyWorker(QThread):
             self.log_message.emit(f"  Serial session log: {result.log_path}")
         self.finished_with_status.emit(result.success)
 
+    def load_serial_credentials(self) -> dict[str, str]:
+        try:
+            credentials = load_credentials(self.credentials_path)
+        except Exception:
+            return {}
+        return {
+            "username": str(credentials.get("username", "")),
+            "password": str(credentials.get("password", "")),
+            "enable_password": str(credentials.get("enable_password", "")),
+        }
+
+
+class SerialReadinessWorker(QThread):
+    log_message = Signal(str)
+    finished_with_status = Signal(bool)
+
+    def __init__(self, port: str, baudrate: int, output_path: str, credentials_path: str) -> None:
+        super().__init__()
+        self.port = port
+        self.baudrate = baudrate
+        self.output_path = output_path
+        self.credentials_path = credentials_path
+
+    def run(self) -> None:
+        result = check_restore_readiness_over_serial(
+            self.port,
+            baudrate=self.baudrate,
+            output_folder=self.output_path or "backups",
+            **self.load_serial_credentials(),
+        )
+        self.log_message.emit("READ-ONLY restore readiness result - NO CONFIGURATION CHANGES WERE MADE")
+        self.log_message.emit(f"  Readiness state: {result.readiness_state}")
+        if result.error_message:
+            self.log_message.emit(f"  Error: {result.error_message}")
+        self.log_message.emit(f"  Prompt: {result.detected_prompt or '(not detected)'}")
+        self.log_message.emit(f"  Hostname: {result.hostname or '(not detected)'}")
+        self.log_message.emit(f"  Model: {result.model or '(not detected)'}")
+        self.log_message.emit(f"  Serial number: {result.serial_number or '(not detected)'}")
+        self.log_message.emit(f"  IOS version: {result.ios_version or '(not detected)'}")
+        self.log_message.emit("  Evidence found:")
+        if result.evidence_found:
+            for item in result.evidence_found:
+                self.log_message.emit(f"    - {item}")
+        else:
+            self.log_message.emit("    - None")
+        if result.warnings:
+            self.log_message.emit("  Warnings:")
+            for item in result.warnings:
+                self.log_message.emit(f"    - {item}")
+        if result.backup_bundle_path:
+            self.log_message.emit(f"  Pre-restore backup bundle / log path: {result.backup_bundle_path}")
+        self.finished_with_status.emit(result.success)
+
+    def load_serial_credentials(self) -> dict[str, str]:
+        try:
+            credentials = load_credentials(self.credentials_path)
+        except Exception:
+            return {}
+        return {
+            "username": str(credentials.get("username", "")),
+            "password": str(credentials.get("password", "")),
+            "enable_password": str(credentials.get("enable_password", "")),
+        }
+
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.worker: BackupWorker | None = None
         self.serial_worker: SerialIdentifyWorker | None = None
+        self.readiness_worker: SerialReadinessWorker | None = None
         self.setWindowTitle("Cisco Backup Utility")
         self.resize(820, 520)
 
@@ -133,6 +200,8 @@ class MainWindow(QMainWindow):
         self.reset_button.clicked.connect(self.reset_saved_paths)
         self.serial_identify_button = QPushButton("Identify Switch Over Serial")
         self.serial_identify_button.clicked.connect(self.start_serial_identify)
+        self.serial_readiness_button = QPushButton("Run Restore Readiness Check")
+        self.serial_readiness_button.clicked.connect(self.start_serial_readiness)
 
         form = QFormLayout()
         form.addRow("Device inventory", self._with_button(self.devices_input, devices_button))
@@ -150,6 +219,7 @@ class MainWindow(QMainWindow):
         serial_form.addRow("COM port", self._combo_with_button(self.serial_port_combo, refresh_serial_button))
         serial_form.addRow("Baudrate", self.serial_baudrate_input)
         serial_form.addRow("", self.serial_identify_button)
+        serial_form.addRow("", self.serial_readiness_button)
 
         layout = QVBoxLayout()
         title = QLabel("Cisco Backup Utility")
@@ -303,30 +373,51 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def start_serial_identify(self) -> None:
+        serial_inputs = self.serial_inputs()
+        if serial_inputs is None:
+            return
+        port, baudrate, output_path = serial_inputs
+
+        self.serial_identify_button.setEnabled(False)
+        self.log_output.appendPlainText(f"Starting read-only serial identification on {port}...")
+        self.serial_worker = SerialIdentifyWorker(port, baudrate, output_path, self.credentials_input.text().strip())
+        self.serial_worker.log_message.connect(self.log_output.appendPlainText)
+        self.serial_worker.finished_with_status.connect(self.serial_identify_finished)
+        self.serial_worker.start()
+
+    def start_serial_readiness(self) -> None:
+        serial_inputs = self.serial_inputs()
+        if serial_inputs is None:
+            return
+        port, baudrate, output_path = serial_inputs
+
+        self.serial_readiness_button.setEnabled(False)
+        self.log_output.appendPlainText(f"Starting READ-ONLY restore readiness check on {port}...")
+        self.readiness_worker = SerialReadinessWorker(port, baudrate, output_path, self.credentials_input.text().strip())
+        self.readiness_worker.log_message.connect(self.log_output.appendPlainText)
+        self.readiness_worker.finished_with_status.connect(self.serial_readiness_finished)
+        self.readiness_worker.start()
+
+    def serial_inputs(self) -> tuple[str, int, str] | None:
         port = self.serial_port_combo.currentData()
         if not port:
             QMessageBox.warning(self, "No COM port selected", "Select a serial COM port first.")
-            return
+            return None
 
         try:
             baudrate = int(self.serial_baudrate_input.text().strip() or "9600")
         except ValueError:
             QMessageBox.warning(self, "Invalid baudrate", "Enter a numeric baudrate, such as 9600.")
-            return
+            return None
 
         output_path = self.output_input.text().strip() or "backups"
         try:
             Path(output_path).mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             QMessageBox.warning(self, "Cannot open output folder", f"The output folder could not be opened: {exc}")
-            return
+            return None
 
-        self.serial_identify_button.setEnabled(False)
-        self.log_output.appendPlainText(f"Starting read-only serial identification on {port}...")
-        self.serial_worker = SerialIdentifyWorker(port, baudrate, output_path)
-        self.serial_worker.log_message.connect(self.log_output.appendPlainText)
-        self.serial_worker.finished_with_status.connect(self.serial_identify_finished)
-        self.serial_worker.start()
+        return port, baudrate, output_path
 
     def validate_inputs(self, devices_path: str, credentials_path: str, output_path: str) -> str:
         if not devices_path:
@@ -361,6 +452,15 @@ class MainWindow(QMainWindow):
                 self,
                 "Serial identification finished",
                 "Serial identification finished with warnings or errors. Check the log for details.",
+            )
+
+    def serial_readiness_finished(self, success: bool) -> None:
+        self.serial_readiness_button.setEnabled(True)
+        if not success:
+            QMessageBox.information(
+                self,
+                "Readiness check finished",
+                "Readiness check finished with warnings or errors. Check the log for details.",
             )
 
 

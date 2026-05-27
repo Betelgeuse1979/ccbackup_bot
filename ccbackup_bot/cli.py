@@ -4,7 +4,14 @@ from pathlib import Path
 from ccbackup_bot.backup_runner import create_backup_folder, run_backup_job
 from ccbackup_bot.db import database_enabled_from_env, store_successful_backups_and_write_report
 from ccbackup_bot.devices import load_credentials, load_devices_from_excel
-from ccbackup_bot.serial_console import identify_switch_over_serial, list_serial_ports
+from ccbackup_bot.serial_console import check_restore_readiness_over_serial, identify_switch_over_serial, list_serial_ports
+
+
+def load_optional_credentials(path: str) -> dict[str, str]:
+    try:
+        return load_credentials(path)
+    except FileNotFoundError:
+        return {}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -20,6 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--list-serial-ports", action="store_true", help="List available serial console ports.")
     parser.add_argument("--serial-identify", metavar="PORT", help="Identify a switch over a read-only serial console session.")
+    parser.add_argument("--serial-readiness", metavar="PORT", help="Run a read-only restore readiness check over serial.")
     parser.add_argument("--serial-baudrate", type=int, default=9600, help="Serial baudrate. Default: 9600.")
     return parser
 
@@ -42,7 +50,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.serial_identify:
-        result = identify_switch_over_serial(args.serial_identify, baudrate=args.serial_baudrate, log_folder=Path(args.output) / "logs")
+        credentials = load_optional_credentials(args.credentials)
+        result = identify_switch_over_serial(
+            args.serial_identify,
+            baudrate=args.serial_baudrate,
+            log_folder=Path(args.output) / "logs",
+            username=str(credentials.get("username", "")),
+            password=str(credentials.get("password", "")),
+            enable_password=str(credentials.get("enable_password", "")),
+        )
         print(f"Read-only serial identification on {result.port} at {result.baudrate} baud")
         print(f"Status: {result.status}")
         if result.error_message:
@@ -56,8 +72,42 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Serial session log: {result.log_path}")
         return 0 if result.success else 1
 
+    if args.serial_readiness:
+        credentials = load_optional_credentials(args.credentials)
+        result = check_restore_readiness_over_serial(
+            args.serial_readiness,
+            baudrate=args.serial_baudrate,
+            output_folder=args.output,
+            username=str(credentials.get("username", "")),
+            password=str(credentials.get("password", "")),
+            enable_password=str(credentials.get("enable_password", "")),
+        )
+        print(f"READ-ONLY restore readiness check on {result.port} at {result.baudrate} baud")
+        print("NO CONFIGURATION CHANGES WERE MADE")
+        print(f"Readiness state: {result.readiness_state}")
+        if result.error_message:
+            print(f"Error: {result.error_message}")
+        print(f"Prompt: {result.detected_prompt or '(not detected)'}")
+        print(f"Hostname: {result.hostname or '(not detected)'}")
+        print(f"Model: {result.model or '(not detected)'}")
+        print(f"Serial number: {result.serial_number or '(not detected)'}")
+        print(f"IOS version: {result.ios_version or '(not detected)'}")
+        print("Evidence found:")
+        if result.evidence_found:
+            for item in result.evidence_found:
+                print(f"  - {item}")
+        else:
+            print("  - None")
+        if result.warnings:
+            print("Warnings:")
+            for item in result.warnings:
+                print(f"  - {item}")
+        if result.backup_bundle_path:
+            print(f"Pre-restore backup bundle / log path: {result.backup_bundle_path}")
+        return 0 if result.success else 1
+
     if not args.devices:
-        parser.error("--devices is required unless using --list-serial-ports or --serial-identify")
+        parser.error("--devices is required unless using --list-serial-ports, --serial-identify, or --serial-readiness")
 
     credentials = load_credentials(args.credentials)
     devices = load_devices_from_excel(args.devices, credentials)

@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 build/
 dist/
+backups/
 
 credentials.json
 *.xlsx

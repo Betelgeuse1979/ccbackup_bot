@@ -157,12 +157,31 @@ Use it to:
 - keep the default `9600` baudrate unless instructed otherwise
 - identify the switch prompt, hostname, model, serial number, and IOS version
 - save a serial session log
+- run a read-only restore readiness check
+- save a pre-restore safety backup bundle if existing configuration is detected
 
 This feature does not restore configuration, enter configuration mode, run
 `write memory`, run copy commands, reload the switch, or answer the initial
 setup dialog.
 
+If the switch opens at a prompt ending in `>`, the app may use the provided
+credentials to enter enable mode so it can run read-only `show` commands. It
+still does not enter configuration mode or save changes.
+
 More details are available in `docs/SERIAL_CONSOLE.md`.
+
+If the readiness state is `HAS_EXISTING_CONFIG`, it means the switch appears to
+already have meaningful configuration such as a non-default hostname, local
+users, AAA, VLANs, IP interfaces, routes, or startup-config content. The app
+will save a safety backup bundle under:
+
+```text
+backup-folder\
+  pre_restore_backups\
+    YYYYMMDD_HHMMSS_HOSTNAME\
+```
+
+No restore actions are performed in this release.
 
 ## Run A Backup
 
