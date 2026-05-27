@@ -4,11 +4,12 @@ from pathlib import Path
 from ccbackup_bot.backup_runner import create_backup_folder, run_backup_job
 from ccbackup_bot.db import database_enabled_from_env, store_successful_backups_and_write_report
 from ccbackup_bot.devices import load_credentials, load_devices_from_excel
+from ccbackup_bot.serial_console import identify_switch_over_serial, list_serial_ports
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Back up Cisco switch running configs.")
-    parser.add_argument("--devices", required=True, help="Path to the Excel device inventory.")
+    parser.add_argument("--devices", help="Path to the Excel device inventory.")
     parser.add_argument("--credentials", default="credentials.json", help="Path to credentials JSON.")
     parser.add_argument("--output", default="backups", help="Folder where dated backups are saved.")
     parser.add_argument("--skip-ping", action="store_true", help="Try connecting without pinging first.")
@@ -17,12 +18,46 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Store successful backups in PostgreSQL and write a database change report.",
     )
+    parser.add_argument("--list-serial-ports", action="store_true", help="List available serial console ports.")
+    parser.add_argument("--serial-identify", metavar="PORT", help="Identify a switch over a read-only serial console session.")
+    parser.add_argument("--serial-baudrate", type=int, default=9600, help="Serial baudrate. Default: 9600.")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.list_serial_ports:
+        try:
+            ports = list_serial_ports()
+        except Exception as exc:
+            print(f"Could not list serial ports: {exc}")
+            return 1
+        if not ports:
+            print("No serial ports found.")
+            return 0
+        for port in ports:
+            print(f"{port.port}: {port.description}")
+        return 0
+
+    if args.serial_identify:
+        result = identify_switch_over_serial(args.serial_identify, baudrate=args.serial_baudrate, log_folder=Path(args.output) / "logs")
+        print(f"Read-only serial identification on {result.port} at {result.baudrate} baud")
+        print(f"Status: {result.status}")
+        if result.error_message:
+            print(f"Error: {result.error_message}")
+        print(f"Prompt: {result.detected_prompt or '(not detected)'}")
+        print(f"Hostname: {result.hostname or '(not detected)'}")
+        print(f"Model: {result.model or '(not detected)'}")
+        print(f"Serial number: {result.serial_number or '(not detected)'}")
+        print(f"IOS version: {result.ios_version or '(not detected)'}")
+        if result.log_path:
+            print(f"Serial session log: {result.log_path}")
+        return 0 if result.success else 1
+
+    if not args.devices:
+        parser.error("--devices is required unless using --list-serial-ports or --serial-identify")
 
     credentials = load_credentials(args.credentials)
     devices = load_devices_from_excel(args.devices, credentials)

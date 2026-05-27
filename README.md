@@ -70,6 +70,9 @@ Database setup is documented in
 [docs/DATABASE_SETUP.md](docs/DATABASE_SETUP.md). The app still works normally
 without PostgreSQL configured.
 
+Read-only serial console identification is documented in
+[docs/SERIAL_CONSOLE.md](docs/SERIAL_CONSOLE.md).
+
 ## GUI
 
 Install the requirements, then start the desktop app:
@@ -91,6 +94,10 @@ change report** checkbox. If selected, PostgreSQL connection settings must be
 provided through environment variables. If database settings are missing, the
 normal file backup still runs and the log explains that database storage was
 skipped.
+
+The GUI includes a small **Serial Console - READ-ONLY Identification** section
+for identifying a switch over a console cable. It does not restore
+configuration or send write commands.
 
 On Windows, GUI settings are stored at:
 

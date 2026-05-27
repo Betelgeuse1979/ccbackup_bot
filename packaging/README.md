@@ -83,3 +83,6 @@ on trusted management networks. SSH/Netmiko support is the next priority.
 Optional PostgreSQL-backed configuration history is documented in
 [docs/DATABASE_SETUP.md](../docs/DATABASE_SETUP.md). PostgreSQL settings are
 provided by environment variables and are not bundled into the packaged app.
+
+Read-only serial console identification is documented in
+[docs/SERIAL_CONSOLE.md](../docs/SERIAL_CONSOLE.md).

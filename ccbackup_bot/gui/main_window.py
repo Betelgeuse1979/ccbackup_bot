@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QCheckBox,
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -22,6 +23,7 @@ from ccbackup_bot.backup_runner import create_backup_folder, run_backup_job
 from ccbackup_bot.db import store_successful_backups_and_write_report
 from ccbackup_bot.devices import load_credentials, load_devices_from_excel
 from ccbackup_bot.gui.settings import clear_settings, load_settings, save_settings, settings_path
+from ccbackup_bot.serial_console import identify_switch_over_serial, list_serial_ports
 
 
 class BackupWorker(QThread):
@@ -68,10 +70,41 @@ class BackupWorker(QThread):
             self.finished_with_status.emit(False)
 
 
+class SerialIdentifyWorker(QThread):
+    log_message = Signal(str)
+    finished_with_status = Signal(bool)
+
+    def __init__(self, port: str, baudrate: int, output_path: str) -> None:
+        super().__init__()
+        self.port = port
+        self.baudrate = baudrate
+        self.output_path = output_path
+
+    def run(self) -> None:
+        result = identify_switch_over_serial(
+            self.port,
+            baudrate=self.baudrate,
+            log_folder=Path(self.output_path or "backups") / "logs",
+        )
+        self.log_message.emit("Read-only serial identification result")
+        self.log_message.emit(f"  Status: {result.status}")
+        if result.error_message:
+            self.log_message.emit(f"  Error: {result.error_message}")
+        self.log_message.emit(f"  Prompt: {result.detected_prompt or '(not detected)'}")
+        self.log_message.emit(f"  Hostname: {result.hostname or '(not detected)'}")
+        self.log_message.emit(f"  Model: {result.model or '(not detected)'}")
+        self.log_message.emit(f"  Serial number: {result.serial_number or '(not detected)'}")
+        self.log_message.emit(f"  IOS version: {result.ios_version or '(not detected)'}")
+        if result.log_path:
+            self.log_message.emit(f"  Serial session log: {result.log_path}")
+        self.finished_with_status.emit(result.success)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.worker: BackupWorker | None = None
+        self.serial_worker: SerialIdentifyWorker | None = None
         self.setWindowTitle("Cisco Backup Utility")
         self.resize(820, 520)
 
@@ -79,6 +112,8 @@ class MainWindow(QMainWindow):
         self.credentials_input = QLineEdit("credentials.json")
         self.output_input = QLineEdit("backups")
         self.database_checkbox = QCheckBox("Store backups in PostgreSQL / Generate DB change report")
+        self.serial_port_combo = QComboBox()
+        self.serial_baudrate_input = QLineEdit("9600")
         self.log_output = QPlainTextEdit()
         self.log_output.setReadOnly(True)
         self.startup_warnings: list[str] = []
@@ -89,17 +124,32 @@ class MainWindow(QMainWindow):
         credentials_button.clicked.connect(self.pick_credentials_file)
         output_button = QPushButton("Browse")
         output_button.clicked.connect(self.pick_output_folder)
+        refresh_serial_button = QPushButton("Refresh COM Ports")
+        refresh_serial_button.clicked.connect(self.refresh_serial_ports)
 
         self.backup_button = QPushButton("Back Up Switches")
         self.backup_button.clicked.connect(self.start_backup)
         self.reset_button = QPushButton("Reset Saved Paths")
         self.reset_button.clicked.connect(self.reset_saved_paths)
+        self.serial_identify_button = QPushButton("Identify Switch Over Serial")
+        self.serial_identify_button.clicked.connect(self.start_serial_identify)
 
         form = QFormLayout()
         form.addRow("Device inventory", self._with_button(self.devices_input, devices_button))
         form.addRow("Credentials", self._with_button(self.credentials_input, credentials_button))
         form.addRow("Backup folder", self._with_button(self.output_input, output_button))
         form.addRow("", self.database_checkbox)
+
+        serial_form = QFormLayout()
+        serial_title = QLabel("Serial Console - READ-ONLY Identification")
+        serial_title.setStyleSheet("font-size: 16px; font-weight: 600; color: #14532d;")
+        serial_note = QLabel("No restore, write memory, reload, copy, or configuration commands are sent.")
+        serial_note.setWordWrap(True)
+        serial_form.addRow(serial_title)
+        serial_form.addRow(serial_note)
+        serial_form.addRow("COM port", self._combo_with_button(self.serial_port_combo, refresh_serial_button))
+        serial_form.addRow("Baudrate", self.serial_baudrate_input)
+        serial_form.addRow("", self.serial_identify_button)
 
         layout = QVBoxLayout()
         title = QLabel("Cisco Backup Utility")
@@ -110,6 +160,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
         layout.addWidget(safety_note)
         layout.addLayout(form)
+        layout.addSpacing(12)
+        layout.addLayout(serial_form)
         action_row = QHBoxLayout()
         action_row.addWidget(self.backup_button)
         action_row.addWidget(self.reset_button)
@@ -120,6 +172,7 @@ class MainWindow(QMainWindow):
         container.setLayout(layout)
         self.setCentralWidget(container)
         self.load_saved_paths()
+        self.refresh_serial_ports()
         QTimer.singleShot(0, self.show_startup_warnings)
 
     def _with_button(self, line_edit: QLineEdit, button: QPushButton) -> QWidget:
@@ -127,6 +180,14 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(line_edit, stretch=1)
+        layout.addWidget(button)
+        return row
+
+    def _combo_with_button(self, combo_box: QComboBox, button: QPushButton) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(combo_box, stretch=1)
         layout.addWidget(button)
         return row
 
@@ -147,6 +208,27 @@ class MainWindow(QMainWindow):
         if path:
             self.output_input.setText(path)
             self.save_current_paths()
+
+    def refresh_serial_ports(self) -> None:
+        current_port = self.serial_port_combo.currentData()
+        self.serial_port_combo.clear()
+        try:
+            ports = list_serial_ports()
+        except Exception as exc:
+            self.log_output.appendPlainText(f"Could not list serial ports: {exc}")
+            return
+
+        for port in ports:
+            label = f"{port.port} - {port.description}" if port.description else port.port
+            self.serial_port_combo.addItem(label, port.port)
+
+        if current_port:
+            index = self.serial_port_combo.findData(current_port)
+            if index >= 0:
+                self.serial_port_combo.setCurrentIndex(index)
+
+        if not ports:
+            self.log_output.appendPlainText("No serial COM ports found.")
 
     def load_saved_paths(self) -> None:
         saved_settings, warning = load_settings()
@@ -220,6 +302,32 @@ class MainWindow(QMainWindow):
         self.worker.finished_with_status.connect(self.backup_finished)
         self.worker.start()
 
+    def start_serial_identify(self) -> None:
+        port = self.serial_port_combo.currentData()
+        if not port:
+            QMessageBox.warning(self, "No COM port selected", "Select a serial COM port first.")
+            return
+
+        try:
+            baudrate = int(self.serial_baudrate_input.text().strip() or "9600")
+        except ValueError:
+            QMessageBox.warning(self, "Invalid baudrate", "Enter a numeric baudrate, such as 9600.")
+            return
+
+        output_path = self.output_input.text().strip() or "backups"
+        try:
+            Path(output_path).mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.warning(self, "Cannot open output folder", f"The output folder could not be opened: {exc}")
+            return
+
+        self.serial_identify_button.setEnabled(False)
+        self.log_output.appendPlainText(f"Starting read-only serial identification on {port}...")
+        self.serial_worker = SerialIdentifyWorker(port, baudrate, output_path)
+        self.serial_worker.log_message.connect(self.log_output.appendPlainText)
+        self.serial_worker.finished_with_status.connect(self.serial_identify_finished)
+        self.serial_worker.start()
+
     def validate_inputs(self, devices_path: str, credentials_path: str, output_path: str) -> str:
         if not devices_path:
             return "Select a device inventory Excel file."
@@ -245,6 +353,15 @@ class MainWindow(QMainWindow):
         self.backup_button.setEnabled(True)
         if not success:
             QMessageBox.information(self, "Backup finished", "Backup finished with errors. Check the log for details.")
+
+    def serial_identify_finished(self, success: bool) -> None:
+        self.serial_identify_button.setEnabled(True)
+        if not success:
+            QMessageBox.information(
+                self,
+                "Serial identification finished",
+                "Serial identification finished with warnings or errors. Check the log for details.",
+            )
 
 
 def main() -> int:

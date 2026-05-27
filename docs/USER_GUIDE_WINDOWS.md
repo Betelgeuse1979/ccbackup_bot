@@ -145,6 +145,25 @@ The report shows whether each switch changed compared with its previous
 successful database backup. Database setup is documented in
 `docs/DATABASE_SETUP.md`.
 
+## Read-Only Serial Console Identification
+
+The GUI includes a **Serial Console - READ-ONLY Identification** section for
+identifying a switch connected by console cable.
+
+Use it to:
+
+- refresh available COM ports
+- select the console COM port
+- keep the default `9600` baudrate unless instructed otherwise
+- identify the switch prompt, hostname, model, serial number, and IOS version
+- save a serial session log
+
+This feature does not restore configuration, enter configuration mode, run
+`write memory`, run copy commands, reload the switch, or answer the initial
+setup dialog.
+
+More details are available in `docs/SERIAL_CONSOLE.md`.
+
 ## Run A Backup
 
 1. Confirm the `Device inventory` path is correct.
